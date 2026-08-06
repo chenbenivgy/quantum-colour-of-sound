@@ -1,23 +1,13 @@
 """
-'dependent_trajectory' mode  --  full-STFT, per-bin quantum delay line, where the
-per-bin readout is the ROUTE-1 conditional (retrodicted) Bloch trajectory.
+Dependent-trajectory mode: one quantum delay line per STFT bin, output decoded
+from the exiting probes. Runs N trajectories per bin and produces three renders:
+uncond (plain average) and cond0/cond1, where frame n is conditioned on the
+delayed probe's measurement outcome -- the retrodicted, delayed-choice picture:
 
-Same encode/decode as mode_sms='full_stft' (one system per STFT bin, amplitude &
-phase), but instead of one forward trajectory it runs N trajectories per bin and
-extracts b_a(n) by sorting on the DELAYED probe outcome and averaging:
+    b_a(n) = E[ (sx,sy,sz)(n) | outcome(n+delay) = a ]
 
-    b_a(n) = E[ (sx,sy,sz)(n) | measurement_record[n+delay] = a ]    (over seeds)
-
-The probe injected at frame n exits/is measured at frame n+delay; conditioning
-b(n) on that future outcome is the delayed-choice re-painting of S@n.
-
-Three renderings are produced so you can A/B the difference:
-    uncond  : average over all trajectories          (= expectation / no future)
-    cond0   : conditioned on delayed outcome a = 0
-    cond1   : conditioned on delayed outcome a = 1
-
-Amplitude <- population (1 - <sz>)/2 ; phase <- atan2(<sy>, <sx>) of the AVERAGED
-Bloch vector (average the vector, THEN take the phase -- never average angles).
+Amplitude comes from population, phase from atan2(<sy>,<sx>) of the averaged
+Bloch vector (average the vector first, never the angles).
 """
 import os
 import numpy as np
@@ -29,21 +19,10 @@ import quantum_audio_master as qam
 
 
 def _sparsify_local_unitary(U, tol=1e-12):
-    """Store the collision unitary U as a SPARSE Qobj (exact speed optimisation).
-
-    Physics: H + V couples the system only to its fresh ancilla and the
-    recirculating D_0 qubit; the remaining delay-line qubits D_1..D_{d-1} are
-    spectators this step, so U factorises EXACTLY as U_A (on system/D_0/fresh)
-    tensored with the identity on the spectators.  U is therefore structurally
-    sparse (~8*D nonzeros out of D^2).  Storing it sparse skips the
-    multiply-by-zero / multiply-by-identity inside U @ X @ U.dag().
-
-    This does NOT change the dynamics: the partial trace (dissipation) and the
-    projective measurement (collapse) that follow are left completely untouched.
-    Verified bit-identical to the dense path (max abs diff ~1e-15, identical
-    measurement records).  `tol` (1e-12) only removes expm round-off dust; real
-    couplings here are O(1e-2..1).  If U is genuinely dense this is just a
-    slower no-op, still exact."""
+    """Store the collision unitary sparse. H+V only touches the system, D_0 and
+    the fresh probe, so U factorises as a local unitary tensored with identity
+    on the spectator qubits -- structurally sparse. Verified bit-identical to
+    the dense path; `tol` just drops expm round-off dust."""
     A = U.full()
     A[np.abs(A) < tol] = 0.0
     return Qobj(_sp.csr_matrix(A), dims=U.dims)
@@ -54,27 +33,10 @@ _Z11 = Qobj([[0, 0], [0, 1]])
 
 def adaptive_bandwidth_params(data, fs, M, N, H, nH=60, minf0=100.0, enable=False,
                               floor_db=-80.0, margin=1.3, min_decim=2, verbose=True):
-    """OPTION-A exact-reconstruction bandwidth adaptation (OFF by default).
-
-    Studies the input spectrum; if the content sits well below Nyquist it
-    integer-decimates the signal and shrinks (M, N, H) by the SAME factor, so
-    window DURATIONS and bin spacing are preserved -> identical time-frequency
-    resolution, all bins land in-band, far fewer bins (~decim x fewer => ~decim x
-    faster per-bin quantum transform). This does NOT beat the Gabor limit; it
-    only stops spending bins on the empty high-frequency band.
-
-    enable=False (default) -> returns (data, fs, M, N, H) UNCHANGED.
-    Also returns unchanged if the signal already fills its band (decim<min_decim).
-
-    Bandwidth = highest frequency whose Hann-windowed spectral envelope exceeds
-    `floor_db` (relative to peak); new Nyquist target = bandwidth * margin.
-    nH is intentionally left alone (oversized harmonic tracks are skipped by
-    sineModelSynth, so they cost nothing -- see synthesise_sms).
-
-    Returns
-    -------
-    (data, fs, M, N, H, info)  -- info['changed'] tells you whether it acted.
-    """
+    """Bandwidth adaptation, OFF by default. If the content sits well below
+    Nyquist, integer-decimate and shrink (M, N, H) by the same factor: identical
+    time-frequency resolution, far fewer bins to process. Returns
+    (data, fs, M, N, H, nH, info); info['changed'] says whether it acted."""
     info = {'enabled': bool(enable), 'changed': False}
     if not enable:
         info['reason'] = 'flag off (default)'
@@ -137,6 +99,8 @@ def adaptive_bandwidth_params(data, fs, M, N, H, nH=60, minf0=100.0, enable=Fals
 
 
 def _basis_projectors(measurement_basis):
+    if measurement_basis == 'none':      # no projective measurement (deterministic channel)
+        return None, None
     if measurement_basis == 'z':
         return fock_dm(2, 0), fock_dm(2, 1)
     if measurement_basis == 'x':
@@ -149,11 +113,9 @@ def _basis_projectors(measurement_basis):
 
 
 def _interaction_beamsplitter(g, gz, delay, phase, dim=2):
-    """Excitation-preserving exchange  g·(σx⊗σx + σy⊗σy)  PLUS a QND dephasing
-    term  gz·(σz⊗σz),  both system<->aux. The beamsplitter annihilates |00>
-    (vacuum fixed -> no flood); σz⊗σz is QND on |0> (also vacuum-safe) and
-    injects phase / conditional variation. Mirrors _get_interaction_ham's
-    fresh + D_0 feedback."""
+    """Excitation-preserving exchange g(sx sx + sy sy) plus a QND dephasing term
+    gz(sz sz), to the fresh probe and, with the feedback phase, to D_0.
+    Annihilates |00>: silence stays silent."""
     sx, sy, sz = sigmax(), sigmay(), sigmaz()
     ox = [g * sx] + [qeye(dim)] * delay + [sx]
     oy = [g * sy] + [qeye(dim)] * delay + [sy]
@@ -171,14 +133,26 @@ def _interaction_beamsplitter(g, gz, delay, phase, dim=2):
 def _dependent_colour_kernel(aux_amps, aux_phases, gx, gz, omega_s, omega_cont,
                              omega_cont_z, omega_r, delay, phase, DeltaT,
                              measurement_basis, evuType, seed, dim=2,
-                             interaction='beamsplitter', fast=False):
-    """One trajectory of the COLOUR-encoded dependent kernel:
-    encode_aux_state(amp,phi) -> delay-line collision -> PASSIVE decode of the
-    exiting aux (Bloch) + projective measurement (conditioning outcome).
-    interaction='beamsplitter' (excitation-preserving, silent->silent) or 'spin'
-    (original σxσx+σzσz)."""
+                             interaction='beamsplitter', fast=False,
+                             theta_clock=0.0):
+    """One trajectory of the colour-encoded kernel: encode the probe, collide,
+    passively decode the exiting probe, then measure it projectively (the
+    conditioning outcome). interaction='beamsplitter' or 'spin'.
+
+    theta_clock (0 = off): the bin's per-tick carrier advance. Adds the same
+    splitting (theta/2)*sigma_z to every qubit of the register, so phases ride
+    the carrier while equal splittings keep the exchange resonant; sigma_z on
+    vacuum does nothing, so silence is untouched."""
     N = [dim]; b = destroy(dim)
     H = qam._get_SPbHam(omega_s, omega_cont, omega_cont_z, omega_r, b, delay, N, evuType)
+    if theta_clock:
+        nq = delay + 2
+        Hck = 0
+        for j in range(nq):
+            ops = [qeye(dim)] * nq
+            ops[j] = sigmaz()
+            Hck = Hck + tensor(ops)
+        H = H + 0.5 * theta_clock * Hck
     if interaction == 'beamsplitter':
         V = _interaction_beamsplitter(gx, gz, delay, phase, dim)   # gx=exchange, gz=σz dephasing
     else:
@@ -189,7 +163,10 @@ def _dependent_colour_kernel(aux_amps, aux_phases, gx, gz, omega_s, omega_cont,
     Ud = U.dag()
     keep = qam._keep_indices(delay)
     m0, m1 = _basis_projectors(measurement_basis)
-    if delay == 0:
+    no_meas = (measurement_basis == 'none')   # deterministic: trace exiting aux, no collapse
+    if no_meas:
+        P0 = P1 = None
+    elif delay == 0:
         P0, P1 = tensor(qeye(dim), m0), tensor(qeye(dim), m1)
     else:
         P0 = tensor([qeye(dim), m0] + [qeye(dim)] * (delay - 1) + [qeye(dim)])
@@ -201,11 +178,21 @@ def _dependent_colour_kernel(aux_amps, aux_phases, gx, gz, omega_s, omega_cont,
     for n in range(runs):
         aux = qam.encode_aux_state(aux_amps[n], aux_phases[n], N)   # amplitude INTO the state
         rp = U * tensor(rho, aux) * Ud
+        # feedback phases outside {0, pi} make the map non-trace-preserving;
+        # renormalise per step (exact no-op at 0/pi)
+        trp = float(np.real(rp.tr()))
+        if trp > 1e-12:
+            rp = rp / trp
         rex = rp.ptrace(1)                                          # exiting aux (D_0)
         SX[n] = float(np.real(expect(sigmax(), rex)))              # passive decode
         SY[n] = float(np.real(expect(sigmay(), rex)))
         POP[n] = float(np.real(expect(_Z11, rex)))
-        p0 = max(float(np.real((P0 * rp).tr())), 0.0); p1 = max(1.0 - p0, 0.0)
+        if no_meas:                       # deterministic: trace out, no collapse, no record
+            MREC[n] = -1
+            rho = rp.ptrace(keep)
+            continue
+        p0 = max(float(np.real((P0 * rp).tr())), 0.0)
+        p1 = max(float(np.real((P1 * rp).tr())), 0.0)   # explicit tr(P1 rho), not 1-p0 (B15)
         s = p0 + p1
         p0, p1 = (0.5, 0.5) if s < 1e-12 else (p0 / s, p1 / s)
         o = rng.choice([0, 1], p=[p0, p1]); MREC[n] = o            # projective conditioning
@@ -222,28 +209,72 @@ def dependent_colour_transform_per_bin(
         gamma_x=0.1, gamma_z=0.1, omega_cont=0.0, omega_cont_z=0.0,
         omega_s=0.0, omega_r=0.0, freq_scale=False, interaction='beamsplitter',
         measurement_basis='x', evuType='Pur.Deph', amp_gain=1.0, verbose=True,
-        fast=False, omega_s_res=0.0, fs=None, soft_gain=False):
-    """Colour-encoded dependent transform. Amplitude is encoded in the circuit
-    (encode_aux_state) and read back from the decoded exiting aux (pop) -> silent
-    in stays silent out, no re-injection. freq_scale=False -> flat couplings
-    (omega_s hook OFF); True -> couplings x freq/100 (old behaviour).
-    amp_gain boosts the encoded population off the |00> vacuum fixed point
-    (effective rate ~ g^2*DeltaT*a, gated by input population a). Encode
-    clip(a*amp_gain,1), decode, divide back by amp_gain -> energy-fair, still
-    silent->silent (0*gain=0); loud bins above 1/amp_gain saturate (compression).
-    soft_gain=True -> replace the hard clip with an invertible knee enc=1-exp(-g*a),
-    dec=-ln(1-p)/g: same weak-bin lift, NO loud-bin saturation (ordering preserved) ->
-    excitation transfer stays visible in the amplitude. omega_s_res>0 -> per-bin system
-    precession os = omega_s_res*(freq/fs)*gz (a resonator tuned to the bin frequency);
-    detunes the exchange at high frequency (treble goes static/dry) and writes a phase
-    carrier where the exchange is still alive."""
+        fast=False, omega_s_res=0.0, fs=None, soft_gain=False,
+        amp_mode=None, amp_pow=0.5, carrier_clock=False, stft_hop=None):
+    """Colour-encoded dependent transform over the given bins.
+
+    Amplitude is companded (amp_mode 'power': enc a**amp_pow, dec p**(1/amp_pow);
+    'soft' and 'hard' are legacy), encoded into the probes, and read back from
+    the exiting probe's population -- silent in stays silent out. The input is
+    padded by `delay` frames and the decoded arrays sliced back, so the outputs
+    are time-aligned with the input (B16); output frame n is conditioned on the
+    probe measured at n+delay.
+
+    omega_s_res > 0 adds system-only precession os = omega_s_res*(f_k/fs)*gz,
+    a detuning that dries the channel towards high frequency.
+
+    carrier_clock (needs stft_hop and fs): same splitting on every register
+    qubit at the bin's carrier rate, so decoded phases ride the carrier. True
+    estimates the rate from the input's per-frame phase advance (energy-weighted
+    circular mean); 'bin' uses the grid rate 2*pi*f_k*H/fs -- audibly worse for
+    off-grid content, kept for A/B.
+
+    Returns out_mag (dict of 0-1 magnitude tables), out_phase, scale_per_bin,
+    diag (per bin: fallback_frac = conditional frames that fell back to the
+    unconditional average, and both_outcomes_frac)."""
+    if amp_mode is None:
+        amp_mode = 'soft' if soft_gain else 'hard'
+    if amp_mode not in ('hard', 'soft', 'power'):
+        raise ValueError(f"amp_mode '{amp_mode}' not in hard|soft|power")
+    no_meas = (measurement_basis == 'none')
+    if no_meas:
+        n_traj = 1        # deterministic: every trajectory identical; cond0/1 := uncond
     num_frames, num_bins = in_mag.shape
-    # GLOBAL normalization (one scale) — per-bin would re-inject each bin's level,
-    # which is exactly the amplitude inheritance we are avoiding.
+    T = num_frames + delay          # padded kernel length (B16 latency compensation)
+    # one global scale; per-bin normalisation would re-inject each bin's level
     mag_norm, scale_f = qam.normalize_amplitudes(in_mag)
     scale_per_bin = np.full(num_bins, scale_f)
     out_mag = {v: np.clip(mag_norm.copy(), 0.0, 1.0) for v in _VERSIONS}
     out_phase = {v: in_phase.copy() for v in _VERSIONS}
+
+    def _encode(a):
+        if amp_mode == 'power':
+            return np.clip(a, 0.0, 1.0) ** amp_pow
+        if amp_mode == 'soft':
+            return 1.0 - np.exp(-amp_gain * a)
+        return np.clip(a * amp_gain, 0.0, 1.0)
+
+    def _decode(p):
+        p = np.clip(p, 0.0, 1.0)
+        if amp_mode == 'power':
+            return p ** (1.0 / amp_pow)
+        if amp_mode == 'soft':
+            return np.clip(-np.log(1.0 - np.clip(p, 0.0, 1.0 - 1e-3)) / amp_gain, 0.0, 1.0)
+        return np.clip(p / amp_gain, 0.0, 1.0)
+
+    th_clock_arr = None
+    if carrier_clock:
+        if not stft_hop:
+            raise ValueError('carrier_clock requires stft_hop (hop size in samples)')
+        _fsc = fs if fs else 2.0 * float(np.max(freq_bins))
+        th_bin = 2.0 * np.pi * np.asarray(freq_bins, float) * float(stft_hop) / float(_fsc)
+        if carrier_clock == 'bin':
+            th_clock_arr = th_bin
+        else:   # True / 'input': phase-vocoder IF, energy-weighted circular mean
+            w = in_mag[1:, :] ** 2
+            zc = np.sum(w * np.exp(1j * (np.diff(in_phase, axis=0) - th_bin[None, :])), axis=0)
+            th_clock_arr = th_bin + np.angle(zc + 1e-30)   # silent bins fall back to grid rate
+
     diag = {}
     total = len(bin_indices)
     for count, k in enumerate(bin_indices):
@@ -252,39 +283,46 @@ def dependent_colour_transform_per_bin(
         sc = (freq_bins[k] / 100.0) if freq_scale else 1.0
         gx, gz = gamma_x * sc, gamma_z * sc
         oc, ocz, os_, orr = omega_cont * sc, omega_cont_z * sc, omega_s * sc, omega_r * sc
-        if omega_s_res:   # RESONATOR: system precesses at bin freq -> detunes exchange at high f, writes phase carrier
+        if omega_s_res:   # resonator: detunes the exchange towards high frequency
             _fs = fs if fs else 2.0 * float(np.max(freq_bins))
             os_ = os_ + omega_s_res * (freq_bins[k] / _fs) * gz
-        # soft_gain: invertible knee 1-exp(-g*a) instead of clip(g*a,1) -> weak-bin lift kept, loud-bin saturation removed
-        amps = (1.0 - np.exp(-amp_gain * mag_norm[:, k])) if soft_gain else np.clip(mag_norm[:, k] * amp_gain, 0.0, 1.0)
-        phs = in_phase[:, k]
-        SX = np.empty((n_traj, num_frames)); SY = np.empty((n_traj, num_frames))
-        POP = np.empty((n_traj, num_frames)); MR = np.empty((n_traj, num_frames), int)
+        th_ck = float(th_clock_arr[k]) if th_clock_arr is not None else 0.0
+        amps = np.concatenate([_encode(mag_norm[:, k]), np.zeros(delay)])   # B16 pad
+        phs = np.concatenate([in_phase[:, k], np.zeros(delay)])
+        SX = np.empty((n_traj, T)); SY = np.empty((n_traj, T))
+        POP = np.empty((n_traj, T)); MR = np.empty((n_traj, T), int)
         for ti in range(n_traj):
             sx, sy, pop, mr = _dependent_colour_kernel(
                 amps, phs, gx, gz, os_, oc, ocz, orr, delay, phase, DeltaT,
                 measurement_basis, evuType, base_seed + 10007 * int(k) + ti,
-                interaction=interaction, fast=fast)
+                interaction=interaction, fast=fast, theta_clock=th_ck)
             SX[ti], SY[ti], POP[ti], MR[ti] = sx, sy, pop, mr
+        n_fallback = 0; n_cond = 0
         for v in _VERSIONS:
-            amp = np.empty(num_frames); ph = np.empty(num_frames)
-            for n in range(num_frames):
-                if v == 'uncond':
+            amp = np.empty(T); ph = np.empty(T)
+            for n in range(T):
+                if v == 'uncond' or no_meas:
                     sel = slice(None)
                 else:
                     a = 0 if v == 'cond0' else 1
                     cf = n + delay
-                    if cf < num_frames:
-                        mask = (MR[:, cf] == a); sel = mask if mask.any() else slice(None)
+                    if cf < T:
+                        mask = (MR[:, cf] == a)
+                        n_cond += 1
+                        if mask.any():
+                            sel = mask
+                        else:
+                            sel = slice(None); n_fallback += 1
                     else:
                         sel = slice(None)
                 amp[n] = POP[sel, n].mean()
                 ph[n] = np.arctan2(SY[sel, n].mean(), SX[sel, n].mean())
-            if soft_gain:   # invert the soft knee: a = -ln(1-p)/g  (clip p<1 so a fully-excited exit doesn't blow up)
-                out_mag[v][:, k] = np.clip(-np.log(1.0 - np.clip(amp, 0.0, 1.0 - 1e-3)) / amp_gain, 0.0, 1.0)
-            else:
-                out_mag[v][:, k] = np.clip(amp / amp_gain, 0.0, 1.0)   # undo boost -> energy-fair
-            out_phase[v][:, k] = ph
+            # B16: slice the delay-line latency away -> output aligned with input
+            out_mag[v][:, k] = _decode(amp[delay:delay + num_frames])
+            out_phase[v][:, k] = ph[delay:delay + num_frames]
+        both = np.mean([(MR[:, n] == 0).any() and (MR[:, n] == 1).any() for n in range(T)])
+        diag[k] = dict(fallback_frac=n_fallback / max(n_cond, 1),
+                       both_outcomes_frac=float(both))
     return out_mag, out_phase, scale_per_bin, diag
 
 

@@ -143,14 +143,9 @@ def _embed_2q_gate_at_01(gate_4x4, n_qubits):
 
 
 def _sparsify_op(U, tol=1e-12):
-    """Return U stored as a SPARSE Qobj (exact speed optimisation, no physics change).
-
-    The sensing circuit applies only 1- and 2-qubit gates (encode, partial SWAPs)
-    embedded in the (delay+2)-qubit space; each is the identity on every untouched
-    qubit, so its embedded matrix is structurally sparse (~a few * D nonzeros out
-    of D^2).  Storing it sparse skips the multiply-by-identity in U @ rho @ U.dag().
-    The partial trace (readout / discard) is untouched, so the result is identical
-    to the dense path (verified ~1e-15).  `tol` only drops round-off dust."""
+    """Store an embedded gate sparse: 1- and 2-qubit gates are identity on every
+    untouched qubit, so their embedded matrices are structurally sparse.
+    Identical to the dense path; `tol` only drops round-off dust."""
     A = U.full()
     A[np.abs(A) < tol] = 0.0
     return Qobj(_sp.csr_matrix(A), dims=U.dims)
@@ -241,9 +236,12 @@ def normalize_amplitudes_per_bin(Xr_mag):
 # ---- Initial state helpers ----
 
 def _initial_system_state(evuType):
-    """Return single-qubit initial density matrix.  B12: no spurious tensor() wrap."""
+    """Single-qubit initial state: GROUND |0><0| for 'Pur.Deph' (B21). |+> would
+    carry population 0.5, and in an excitation-preserving channel population is
+    energy -- it lifted the noise floor by ~28 dB on tonal material. Trace must
+    be 1 (B15) so outcome sampling stays unbiased."""
     if evuType == 'Pur.Deph':
-        return 0.5 * Qobj([[1, 0], [0, 0]])     # |+⟩⟨+|
+        return Qobj([[1, 0], [0, 0]])            # |0⟩⟨0| ground (B21)
     return Qobj([[0, 0], [0, 1]])                # |1⟩⟨1|
 
 def _vacuum_delay(delay, dim):
@@ -1277,40 +1275,19 @@ def trotterize_sensing(B_ac_hires, hires_sr, T_phi, T_seq,
                         method='sin_phi',
                         exp_feed_back=False, feedback_swap_angle=np.pi/2,
                         N_mod=10, delta_f=None, fast=False):
-    """
-    NV-center quantum sensing — single delay line.
+    """NV-center quantum sensing, single delay line.
 
-    method='sin_phi' : one Ramsey/Hahn circuit per sample
-    method='qpsd'    : N_mod QPSD sub-circuits per sample, IQ demodulation
+    method='sin_phi': one Ramsey/Hahn circuit per sample; 'qpsd': N_mod
+    sub-circuits per sample with IQ demodulation.
 
-    Architecture (delay > 0)
-    ------------------------
-    Maintained state: S(0) ⊗ D[0](1) ⊗ … ⊗ D[d-1](d)  — NEVER re-initialised.
-    Each step:
-      1. Encode φ[n] on S(0).
-      2. SWAP_in (angle_in ≈ 0.9):  S(0) ↔ fresh_f(d+1).
-         Pushes most of encoding into delay; S retains small residual.
-      3. SWAP_out (angle_out ≈ 0.1): S(0) ↔ D[0](1).
-         Creates quantum memory: S and oldest delay qubit weakly coupled.
-      4. Read ⟨σz⟩ from D[0](1)  [after SWAP_out].
-      5. Trace out D[0](1); remaining = [S, D[1]…D[d-1], f_enc] — layout
-         self-consistently shifts: f_enc becomes new D[d-1].
+    With delay > 0 a persistent register S + D[0..d-1] is kept (never
+    re-initialised). Per step: encode phi[n] on S; SWAP_in pushes it into the
+    line; SWAP_out weakly couples S to the oldest qubit; read <sz> from D[0];
+    trace it out (the fresh qubit becomes the newest line element).
 
-    For delay=0: only SWAP_in applies; readout from fresh auxiliary.
-
-    exp_feed_back (delay>0, method='sin_phi' only)
-    ----------------------------------------------
-    Explicit-feedback ("reverb") mode. Instead of the weak SWAP_out memory:
-      3'. Read ⟨σz⟩ from D[0] FIRST — a clean, unperturbed output sample
-          (expectation is non-destructive, so no swap is needed to read).
-      4'. Apply a STRONG feedback SWAP (angle `feedback_swap_angle`, default
-          π/2 = full swap) S(0) ↔ D[0](1): the delayed qubit's population is
-          routed back into the maintained state and recirculates in the loop,
-          rather than being discarded at trace-out.
-    `feedback_swap_angle` is the reverb-time knob (loop gain): π/2 ≈ lossless
-    / very long tail; smaller angles ≈ shorter decaying tail. swap_angle_out
-    is ignored in this mode.
-    """
+    exp_feed_back (sin_phi only): read D[0] BEFORE any swap (a clean sample),
+    then a strong feedback swap recirculates it into S -- an explicit reverb
+    loop; feedback_swap_angle is the loop gain (pi/2 ~ lossless)."""
     gamma_eff = phase_scale / T_phi
 
     # ── build gates once ─────────────────────────────────────────────────
@@ -1875,7 +1852,7 @@ def trotterize_trajectory(DeltaT, omega_s, omega_r,
         rho_post  = U_static * rho_full * U_static.dag()
 
         p0 = max(float(np.real((P0 * rho_post).tr())), 0.0)
-        p1 = max(1.0 - p0, 0.0)
+        p1 = max(float(np.real((P1 * rho_post).tr())), 0.0)   # B15: explicit tr(P1·ρ), no 1-p0 shortcut
         p_tot = p0 + p1
         if p_tot < 1e-12:
             p0, p1 = 0.5, 0.5

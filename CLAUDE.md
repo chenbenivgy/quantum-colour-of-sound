@@ -84,6 +84,35 @@ plot_quantum_audio(result, show_details=True)
 Output filenames follow: `<stem>_I_sensing.wav`, `<stem>_II_colour_combined.wav`, etc.
 
 ## Critical Constraints
+
+### ⛔ QUANTUM-AS-CARRIER IS INVIOLABLE (read before proposing ANY fix)
+The audio output must be **decoded from the quantum channel and from nothing else**.
+The signal is represented as a quantum state, evolved, measured, and decoded back —
+the whole scientific claim (that the output carries correlations no classical
+measurement channel could produce) dies the moment any part of the output comes
+from somewhere other than the decoded quantum state.
+
+**NEVER propose or implement, under any name or justification:**
+- routing cells/bins/frames *around* the channel (gates, thresholds, bypass, "silence
+  is untouched anyway", passthrough of near-empty cells)
+- mixing, blending, or crossfading the input into the output (wet/dry, "only 1% dry")
+- subtracting the input from the output, or deriving the output as a *modification of
+  the input* rather than as the decoded channel state
+- substituting classically-generated content (noise, interpolation, smoothing) for any
+  output cell — including "repairing" artifacts this way
+- any per-cell conditional that selects between "quantum result" and "input value"
+
+This class of bug has been introduced repeatedly and is expensive to catch. **If an
+artifact appears, the only admissible fixes act INSIDE the physics**: the initial
+state, the couplings (gamma_x/gamma_z), the delay, the feedback phase, the
+measurement basis, the encode/decode companding (must be invertible and applied to
+ALL cells identically), omega_s_res, the STFT parameters, or the number of
+trajectories. If none of those fix it, say so plainly and leave the artifact in.
+
+Exception, clearly labelled: the `USE_QUANTUM_AMP` / `USE_QUANTUM_PHASE` A/B flags,
+which are diagnostic comparisons, never the deliverable output.
+
+### Other constraints
 - `delay ≤ 9` — Hilbert space dimension = 2^(1+delay+1), runtime explodes beyond delay=9
 - Mode IV needs `basic_pitch` installed separately and ≥2 detectable chord events
 - `soundfile` is NEVER aliased as `sf` anywhere in this codebase (B4 bug fix)
@@ -126,3 +155,60 @@ result = quantum_audio_pipeline('satie.wav', mode='sms_colour',
                                  normperbin=True)
 plot_quantum_audio(result)
 ```
+
+## Encoding target flag (`encode_target`, added 2026-09-02)
+Both main routes can now encode into either the persistent **system** qubit or the
+fresh **auxiliary** probe. Defaults reproduce the pre-flag code bit-for-bit.
+- Sensing: `trotterize_sensing(..., encode_target='system')` (also on `_pipeline_sensing`
+  → `quantum_audio_pipeline(mode='sensing', encode_target=...)`). `'aux'` prepares the
+  fresh probe as `U_enc|0⟩` (carries `⟨σz⟩ = sin φ` exactly) and never rotates S.
+- Dependent: `dependent_colour_transform_per_bin(..., encode_target='aux')` and
+  `_dependent_colour_kernel(...)`. `'system'` keeps probes as vacuum and applies
+  `qam.encode_unitary(a, φ) = Rz(φ)·Ry(2·asin√a)` to S (`R|0⟩` = `encode_aux_state`).
+- Companding/decoding/measurement are unchanged for both targets. Not wired into
+  `trotterize_sensing_dual` or the Mode-III `trotterize_trajectory` route.
+- Comparison cells: `Sensing_summary.ipynb` §13, `Dependent_trajectory_summary.ipynb` §15.
+
+## Discontinuous Sound Modulator (VCV Rack module, added 2026-09-03)
+Records `t_l` of input, runs the dependent-trajectory channel (`encode_target='system'`,
+summary-notebook operating point) and loops the render; recompute + crossfade (t_l/2) on
+parameter change; TS1 = varispeed with a t_l/4 glide; Off clears memory; no declick.
+- `dsm_engine.py` — pure-NumPy blueprint of the kernel/transform, certified vs qutip
+  (`test_dsm_engine.py`, run after ANY change to `dependent_trajectory.py`).
+- `dsm_chain.py` — decimation, periodic STFT + warm-up prefix, circular OLA, upsampling
+  (`test_dsm_chain.py`). `dsm_server.py` — engine A (unchanged Python code) job server.
+- `dsm/` — the Rack plugin. `dsm/src/dsm_engine.hpp` = engine B (C++), certified by
+  `test_dsm_cpp.py` (same-STFT decoded matrices ≤1e-13 vs qutip, identical measurement
+  records); `dsm/src/DsmCore.hpp` = module logic (`dsm/tools/core_test.cpp`).
+  Build: `cd dsm && make install` (Makefile forces IEEE-strict float flags).
+- `dsm_verify.py <export_dir>` — re-runs the original code on a buffer the module
+  recorded (right-click → Export) and reports per-stage differences.
+- `DSM_coupling_sweep.ipynb` — coupling sweep for the system encoding (tables A/B, audio).
+- Numerically-silent bins: the system encoding applies Rz(φ) to S even at zero amplitude,
+  so FFT round-off phases leak into the output at ~1e-8; compare engines on the SAME STFT.
+- v2 (2026-09-08): PAST/FUTURE material modes (rolling 10.5 s tap; PAST = the t_l before On,
+  computed at once); physics jobs (abort + new seed on any physics change) vs synthesis jobs
+  (render selector undep/dep0/dep1/twin, trajectory count down: no quantum compute);
+  TRAJECTORIES knob 1..8 appends trajectories incrementally (own seed each, exact); layered
+  crossfades aligned on material time; engine A returns the trajectory store
+  (`dsm_engine.trajectories(kernel_impl='qutip')`), server heartbeat + cancel, fallback to B
+  with ERR light. `dsm_engine.render_from_store` / `twin` / `twin_bin` are the render
+  definitions; `test_dsm_store.py` certifies them against the unchanged transform.
+- v2.1 (2026-09-20): progressive publication of appended trajectories; Off clears the tap;
+  SYNC switch (matched-filter start on the input's repeat, 1.5 t_l fallback,
+  `dsm/tools/sync_test.cpp`); colour-grouped panel with custom knob SVGs.
+  `Core::log()` locks the worker mutex — never call it while holding `mu`.
+
+## Known Bug Fixes — audit additions (B15–B21)
+- **B15**: `p1` must be `tr(P1·ρ)` explicitly — never the `1 - p0` shortcut (it silently
+  assumes trace 1 and biased first-step outcome sampling)
+- **B16**: dependent transform compensates delay-line latency internally (input padded by
+  `delay`, decoded arrays sliced `[delay : delay+num_frames]`) — output is time-aligned
+- **B17**: `diag[k]['fallback_frac']` records cond0/cond1 empty-class fallbacks
+- **B18**: notebook "amp OFF" cell must actually pass `uqa=False` and use the §4 render route
+- **B19**: §15 fast/standard cell must mirror the §4 call exactly (all companding params)
+- **B21**: `_initial_system_state('Pur.Deph')` returns **ground |0⟩⟨0|**, NOT |+⟩⟨+|.
+  |+⟩ carries population 0.5 = real energy in an excitation-preserving channel, so it
+  injects half a quantum into EVERY bin including silent ones, and with `phase=pi` it
+  recirculates rather than draining (+28 dB noise-floor lift on tonal material).
+  Ground init also restores the effective dynamics of the pre-B15 code.

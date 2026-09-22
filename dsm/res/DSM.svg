@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="150" height="380" viewBox="0 0 150 380">
+  <rect width="150" height="380" fill="#1a1a2e"/>
+  <text x="75" y="15" fill="#e0e0ff" font-family="monospace" font-size="7.5" text-anchor="middle" font-weight="bold">DISCONTINUOUS</text>
+  <text x="75" y="24" fill="#a0a0ff" font-family="monospace" font-size="5.5" text-anchor="middle">SOUND MODULATOR</text>
+  <line x1="8" y1="30" x2="142" y2="30" stroke="#334455" stroke-width="0.5"/>
+
+  <!-- row 1: transport (red frame) -->
+  <rect x="7" y="34" width="136" height="46" rx="2" fill="none" stroke="#d9534f" stroke-width="0.6" stroke-opacity="0.8"/>
+  <text x="30" y="41" fill="#d9534f" font-family="monospace" font-size="4.5" text-anchor="middle">ON</text>
+  <text x="60" y="44" fill="#cc6666" font-family="monospace" font-size="2.8" text-anchor="middle">REC</text>
+  <text x="70" y="44" fill="#cccc66" font-family="monospace" font-size="2.8" text-anchor="middle">CMP</text>
+  <text x="80" y="44" fill="#66cc66" font-family="monospace" font-size="2.8" text-anchor="middle">PLAY</text>
+  <text x="90" y="44" fill="#cc4444" font-family="monospace" font-size="2.8" text-anchor="middle">ERR</text>
+  <text x="84" y="63" fill="#d9534f" font-family="monospace" font-size="2.8" text-anchor="start">past</text>
+  <text x="84" y="76" fill="#d9534f" font-family="monospace" font-size="2.8" text-anchor="start">future</text>
+  <text x="120" y="41" fill="#d9534f" font-family="monospace" font-size="4.5" text-anchor="middle">ENGINE</text>
+  <text x="129" y="53" fill="#d9534f" font-family="monospace" font-size="2.8" text-anchor="start">A py</text>
+  <text x="129" y="66" fill="#d9534f" font-family="monospace" font-size="2.8" text-anchor="start">B c++</text>
+
+  <!-- row 2: synthesis only (light blue) -->
+  <rect x="7" y="84" width="136" height="46" rx="2" fill="none" stroke="#5bc8f5" stroke-width="0.6" stroke-opacity="0.8"/>
+  <text x="30" y="92" fill="#5bc8f5" font-family="monospace" font-size="4.5" text-anchor="middle">TS1</text>
+  <text x="75" y="95" fill="#5bc8f5" font-family="monospace" font-size="4.5" text-anchor="middle">VOLUME</text>
+  <text x="120" y="92" fill="#5bc8f5" font-family="monospace" font-size="4.5" text-anchor="middle">RENDER</text>
+  <text x="120" y="126" fill="#4a8aa8" font-family="monospace" font-size="2.4" text-anchor="middle">undep dep0 dep1 cFB pink</text>
+
+  <!-- row 3: couplings (yellow) -->
+  <rect x="7" y="134" width="136" height="46" rx="2" fill="none" stroke="#f2c94c" stroke-width="0.6" stroke-opacity="0.8"/>
+  <text x="30" y="141" fill="#f2c94c" font-family="monospace" font-size="4.5" text-anchor="middle">gx</text>
+  <text x="75" y="141" fill="#f2c94c" font-family="monospace" font-size="4.5" text-anchor="middle">gz</text>
+  <text x="120" y="141" fill="#f2c94c" font-family="monospace" font-size="4.5" text-anchor="middle">COUPLING</text>
+  <text x="129" y="151" fill="#a8903a" font-family="monospace" font-size="2.8" text-anchor="start">auto</text>
+  <text x="129" y="164" fill="#a8903a" font-family="monospace" font-size="2.8" text-anchor="start">knobs</text>
+
+  <!-- rows 4-5: recompute (pink) -->
+  <rect x="7" y="184" width="136" height="98" rx="2" fill="none" stroke="#ff69b4" stroke-width="0.6" stroke-opacity="0.8"/>
+  <text x="30" y="193" fill="#ff69b4" font-family="monospace" font-size="4.5" text-anchor="middle">DELAY</text>
+  <text x="75" y="193" fill="#ff69b4" font-family="monospace" font-size="4.5" text-anchor="middle">HOP</text>
+  <text x="120" y="193" fill="#ff69b4" font-family="monospace" font-size="4.5" text-anchor="middle">MODEL RATE</text>
+  <text x="30" y="243" fill="#ff69b4" font-family="monospace" font-size="4.5" text-anchor="middle">LOOP</text>
+  <text x="75" y="243" fill="#ff69b4" font-family="monospace" font-size="4.5" text-anchor="middle">TRAJECTORIES</text>
+  <text x="120" y="243" fill="#ff69b4" font-family="monospace" font-size="4.5" text-anchor="middle">NEW SET</text>
+  <line x1="8" y1="290" x2="142" y2="290" stroke="#334455" stroke-width="0.4"/>
+
+  <text x="120" y="277" fill="#dddddd" font-family="monospace" font-size="4.5" text-anchor="middle">SYNC</text>
+  <!-- row 6: ports -->
+  <text x="30" y="312" fill="#dddddd" font-family="monospace" font-size="4.5" text-anchor="middle">IN</text>
+  <text x="75" y="312" fill="#dddddd" font-family="monospace" font-size="4.5" text-anchor="middle">ON CV</text>
+  <text x="120" y="312" fill="#dddddd" font-family="monospace" font-size="4.5" text-anchor="middle">OUT</text>
+</svg>

@@ -1,0 +1,25 @@
+# OS / editor / agent state
+.DS_Store
+.claude/
+.ipynb_checkpoints/
+__pycache__/
+
+# generated outputs and scratch
+output/
+dsm_spool/
+*.log
+
+# VCV Rack plugin build products
+dsm/build/
+dsm/dist/
+dsm/*.dylib
+dsm/*.so
+dsm/*.dll
+*.dSYM/
+dsm/tools/core_test
+dsm/tools/core_test_A
+dsm/tools/engine_test
+dsm/tools/kernel_dump
+dsm/tools/sync_probe
+dsm/tools/sync_test
+dsm/tools/traj_stress

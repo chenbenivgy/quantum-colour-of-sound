@@ -213,6 +213,23 @@ def encode_aux_state(amplitude, phase_val, N):
     psi = Qobj([[c0], [c1]])
     return ket2dm(psi)
 
+def encode_unitary(amplitude, phase_val):
+    """Same (amplitude, phase) encoding as `encode_aux_state`, but as a GATE:
+    R(a, φ) = Rz(φ)·Ry(θ), θ = 2·arcsin(√a), so that R|0⟩ = the encode_aux_state
+    ket (same Bloch point, up to a global phase). Used when the encoding is
+    applied as a rotation of the persistent SYSTEM qubit (encode_target='system')
+    instead of preparing a fresh auxiliary probe (encode_target='aux') -- the
+    dependent-route counterpart of the sensing route's Ramsey rotation on S.
+    """
+    a = np.clip(float(amplitude), 0.0, 1.0)
+    theta = 2.0 * np.arcsin(np.sqrt(a))
+    return gate_Rz(float(phase_val)) * gate_Ry(theta)
+
+def _check_encode_target(encode_target):
+    if encode_target not in ('system', 'aux'):
+        raise ValueError(f"encode_target '{encode_target}' not in 'system'|'aux'")
+    return encode_target
+
 def decode_aux_state(rho_aux):
     """Extract (amplitude, phase) from output auxiliary density matrix."""
     pop = expect(Qobj([[0, 0], [0, 1]]), rho_aux)
@@ -1274,7 +1291,8 @@ def trotterize_sensing(B_ac_hires, hires_sr, T_phi, T_seq,
                         sequence='ramsey',
                         method='sin_phi',
                         exp_feed_back=False, feedback_swap_angle=np.pi/2,
-                        N_mod=10, delta_f=None, fast=False):
+                        N_mod=10, delta_f=None, fast=False,
+                        encode_target='system'):
     """NV-center quantum sensing, single delay line.
 
     method='sin_phi': one Ramsey/Hahn circuit per sample; 'qpsd': N_mod
@@ -1285,10 +1303,20 @@ def trotterize_sensing(B_ac_hires, hires_sr, T_phi, T_seq,
     line; SWAP_out weakly couples S to the oldest qubit; read <sz> from D[0];
     trace it out (the fresh qubit becomes the newest line element).
 
+    encode_target: where the sample's Ramsey/Hahn rotation U_enc(phi[n]) acts.
+      'system' (default, original behaviour): on the persistent S qubit --
+        the rotation accumulates on top of whatever S holds.
+      'aux': on the fresh probe instead (fresh = U_enc|0><0|U_enc^dag, so it
+        carries exactly <sz> = sin(phi[n])); S is never rotated and acts only
+        as the mixing memory. Same circuit otherwise (SWAP_in/out, readout),
+        mirroring the dependent route's probe encoding.
+
     exp_feed_back (sin_phi only): read D[0] BEFORE any swap (a clean sample),
     then a strong feedback swap recirculates it into S -- an explicit reverb
     loop; feedback_swap_angle is the loop gain (pi/2 ~ lossless)."""
     gamma_eff = phase_scale / T_phi
+    _check_encode_target(encode_target)
+    enc_on_sys = (encode_target == 'system')
 
     # ── build gates once ─────────────────────────────────────────────────
     U_sw_in  = gate_partial_SWAP(swap_angle_in)
@@ -1330,13 +1358,17 @@ def trotterize_sensing(B_ac_hires, hires_sr, T_phi, T_seq,
                      else _hahn_echo_unitary(pp[n], pm[n]))
 
             if delay == 0:
-                rho_enc = U_enc * rho * U_enc.dag()
-                rho_ext = tensor([rho_enc, fresh_vac])
+                if enc_on_sys:
+                    rho_enc = U_enc * rho * U_enc.dag()
+                    rho_ext = tensor([rho_enc, fresh_vac])
+                else:   # 'aux': rotate the fresh probe, S untouched
+                    rho_ext = tensor([rho, U_enc * fresh_vac * U_enc.dag()])
                 rho_ext = Usw_in_2q * rho_ext * Usw_in_2q_d
                 aux_sz[n] = float(np.real(expect(sigmaz(), rho_ext.ptrace([1]))))
                 rho = rho_ext.ptrace([0])
             else:
-                R = _embed_1q_gate(U_enc, 0, n_ext)
+                # encoding gate on S (index 0) or on the fresh probe (last index)
+                R = _embed_1q_gate(U_enc, 0 if enc_on_sys else n_ext - 1, n_ext)
                 if fast:
                     R = _sparsify_op(R)
                 rho_ext = tensor([rho, fresh_vac])
@@ -1400,13 +1432,16 @@ def trotterize_sensing(B_ac_hires, hires_sr, T_phi, T_seq,
                                          pm_val, theta_k, sequence)
 
                 if delay == 0:
-                    rho_enc = U_enc * rho * U_enc.dag()
-                    rho_ext = tensor([rho_enc, fresh_vac])
+                    if enc_on_sys:
+                        rho_enc = U_enc * rho * U_enc.dag()
+                        rho_ext = tensor([rho_enc, fresh_vac])
+                    else:   # 'aux': rotate the fresh probe, S untouched
+                        rho_ext = tensor([rho, U_enc * fresh_vac * U_enc.dag()])
                     rho_ext = Usw_in_2q * rho_ext * Usw_in_2q_d
                     subs[k] = float(np.real(expect(sigmaz(), rho_ext.ptrace([1]))))
                     rho = rho_ext.ptrace([0])
                 else:
-                    R = _embed_1q_gate(U_enc, 0, n_ext)
+                    R = _embed_1q_gate(U_enc, 0 if enc_on_sys else n_ext - 1, n_ext)
                     rho_ext = tensor([rho, fresh_vac])
                     rho_ext = R * rho_ext * R.dag()
                     rho_ext = Usw_in  * rho_ext * Usw_in_d
@@ -2098,7 +2133,10 @@ def _pipeline_sensing(audio_path, delay=3, phase=np.pi,
                        N_mod=10,
                        swap_angle_in=0.9, swap_angle_out=0.1,
                        sequence='ramsey',
-                       audio_sr=44100, verbose=True):
+                       audio_sr=44100, verbose=True,
+                       encode_target='system'):
+    """encode_target: 'system' (default) rotates the persistent S qubit by the
+    sample; 'aux' rotates the fresh probe instead (see trotterize_sensing)."""
     if verbose:
         print("=== MODE I: NV Quantum Sensing ===")
 
@@ -2114,13 +2152,14 @@ def _pipeline_sensing(audio_path, delay=3, phase=np.pi,
 
     if verbose:
         print(f"  sensing_rate={sensing_rate} Hz  T_phi={T_phi:.5f}  delay={delay}  "
-              f"stretch={stretch:.1f}  method={method}")
+              f"stretch={stretch:.1f}  method={method}  encode_target={encode_target}")
 
     res = trotterize_sensing(
         B_hires, sr, T_phi, T_seq,
         phase_scale=phase_scale, delay=delay,
         swap_angle_in=swap_angle_in, swap_angle_out=swap_angle_out,
-        sequence=sequence, method=method, N_mod=N_mod)
+        sequence=sequence, method=method, N_mod=N_mod,
+        encode_target=encode_target)
 
     out = res['qpsd_phases'] if method == 'qpsd' else res['aux_sigma_z']
     if stretch > 1:
@@ -2146,7 +2185,8 @@ def _pipeline_sensing(audio_path, delay=3, phase=np.pi,
         trotterize_result=res,
         output_paths=dict(sensing=out_path),
         params=dict(sensing_rate=sensing_rate, T_phi=T_phi, delay=delay,
-                    phase_scale=phase_scale, method=method, sequence=sequence),
+                    phase_scale=phase_scale, method=method, sequence=sequence,
+                    encode_target=encode_target),
     )
 
 

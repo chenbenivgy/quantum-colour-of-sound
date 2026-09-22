@@ -134,15 +134,28 @@ def _dependent_colour_kernel(aux_amps, aux_phases, gx, gz, omega_s, omega_cont,
                              omega_cont_z, omega_r, delay, phase, DeltaT,
                              measurement_basis, evuType, seed, dim=2,
                              interaction='beamsplitter', fast=False,
-                             theta_clock=0.0):
+                             theta_clock=0.0, encode_target='aux'):
     """One trajectory of the colour-encoded kernel: encode the probe, collide,
     passively decode the exiting probe, then measure it projectively (the
     conditioning outcome). interaction='beamsplitter' or 'spin'.
+
+    encode_target: where the bin's (magnitude, phase) is written each tick.
+      'aux' (default, original behaviour): the fresh probe is PREPARED in the
+        encoded state |ψ(a,φ)> (qam.encode_aux_state); the system S is only
+        ever driven through the collision.
+      'system': the fresh probe is vacuum and the encoding is applied as a
+        ROTATION of the persistent S qubit, R(a,φ) = Rz(φ)·Ry(2·asin√a)
+        (qam.encode_unitary; R|0> = |ψ(a,φ)>, so from ground it is the same
+        Bloch point) -- the sensing route's picture, where the sample rotates S
+        on top of whatever S already holds. Collision, readout of D_0,
+        measurement and trace-out are identical in both cases.
 
     theta_clock (0 = off): the bin's per-tick carrier advance. Adds the same
     splitting (theta/2)*sigma_z to every qubit of the register, so phases ride
     the carrier while equal splittings keep the exchange resonant; sigma_z on
     vacuum does nothing, so silence is untouched."""
+    qam._check_encode_target(encode_target)
+    enc_on_sys = (encode_target == 'system')
     N = [dim]; b = destroy(dim)
     H = qam._get_SPbHam(omega_s, omega_cont, omega_cont_z, omega_r, b, delay, N, evuType)
     if theta_clock:
@@ -175,8 +188,19 @@ def _dependent_colour_kernel(aux_amps, aux_phases, gx, gz, omega_s, omega_cont,
     rho = qam._initial_state_with_delay(evuType, delay, dim)
     runs = len(aux_amps)
     SX = np.empty(runs); SY = np.empty(runs); POP = np.empty(runs); MREC = np.empty(runs, int)
+    vac = fock_dm(dim, 0)
     for n in range(runs):
-        aux = qam.encode_aux_state(aux_amps[n], aux_phases[n], N)   # amplitude INTO the state
+        if enc_on_sys:
+            # rotate the persistent S (register index 0) by the encoding gate;
+            # the fresh probe enters as vacuum
+            R = qam._embed_1q_gate(qam.encode_unitary(aux_amps[n], aux_phases[n]),
+                                   0, delay + 1)
+            if fast:
+                R = qam._sparsify_op(R)
+            rho = R * rho * R.dag()
+            aux = vac
+        else:
+            aux = qam.encode_aux_state(aux_amps[n], aux_phases[n], N)   # amplitude INTO the state
         rp = U * tensor(rho, aux) * Ud
         # feedback phases outside {0, pi} make the map non-trace-preserving;
         # renormalise per step (exact no-op at 0/pi)
@@ -210,7 +234,8 @@ def dependent_colour_transform_per_bin(
         omega_s=0.0, omega_r=0.0, freq_scale=False, interaction='beamsplitter',
         measurement_basis='x', evuType='Pur.Deph', amp_gain=1.0, verbose=True,
         fast=False, omega_s_res=0.0, fs=None, soft_gain=False,
-        amp_mode=None, amp_pow=0.5, carrier_clock=False, stft_hop=None):
+        amp_mode=None, amp_pow=0.5, carrier_clock=False, stft_hop=None,
+        encode_target='aux'):
     """Colour-encoded dependent transform over the given bins.
 
     Amplitude is companded (amp_mode 'power': enc a**amp_pow, dec p**(1/amp_pow);
@@ -219,6 +244,11 @@ def dependent_colour_transform_per_bin(
     padded by `delay` frames and the decoded arrays sliced back, so the outputs
     are time-aligned with the input (B16); output frame n is conditioned on the
     probe measured at n+delay.
+
+    encode_target: 'aux' (default) prepares each fresh probe in the encoded
+    state; 'system' keeps the probes as vacuum and applies the encoding as a
+    rotation of the persistent system qubit (see _dependent_colour_kernel).
+    Companding and decoding are identical for both.
 
     omega_s_res > 0 adds system-only precession os = omega_s_res*(f_k/fs)*gz,
     a detuning that dries the channel towards high frequency.
@@ -236,6 +266,7 @@ def dependent_colour_transform_per_bin(
         amp_mode = 'soft' if soft_gain else 'hard'
     if amp_mode not in ('hard', 'soft', 'power'):
         raise ValueError(f"amp_mode '{amp_mode}' not in hard|soft|power")
+    qam._check_encode_target(encode_target)
     no_meas = (measurement_basis == 'none')
     if no_meas:
         n_traj = 1        # deterministic: every trajectory identical; cond0/1 := uncond
@@ -295,7 +326,8 @@ def dependent_colour_transform_per_bin(
             sx, sy, pop, mr = _dependent_colour_kernel(
                 amps, phs, gx, gz, os_, oc, ocz, orr, delay, phase, DeltaT,
                 measurement_basis, evuType, base_seed + 10007 * int(k) + ti,
-                interaction=interaction, fast=fast, theta_clock=th_ck)
+                interaction=interaction, fast=fast, theta_clock=th_ck,
+                encode_target=encode_target)
             SX[ti], SY[ti], POP[ti], MR[ti] = sx, sy, pop, mr
         n_fallback = 0; n_cond = 0
         for v in _VERSIONS:

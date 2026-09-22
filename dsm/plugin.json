@@ -1,0 +1,23 @@
+{
+  "slug": "DiscontinuousSoundModulator",
+  "name": "Discontinuous Sound Modulator",
+  "version": "2.0.0",
+  "license": "GPL-3.0-or-later",
+  "brand": "Quantum Audio",
+  "author": "Chen Ben-Ivgy",
+  "authorEmail": "chen.benivgy@mail.huji.ac.il",
+  "authorUrl": "",
+  "pluginUrl": "",
+  "manualUrl": "",
+  "sourceUrl": "",
+  "donateUrl": "",
+  "changelogUrl": "",
+  "modules": [
+    {
+      "slug": "DSM",
+      "name": "Discontinuous Sound Modulator",
+      "description": "Records t_l of input, runs it through a quantum delay line (dependent-trajectory collision model, one qubit line per STFT bin) and loops the decoded render; recomputes on parameter change with a crossfade",
+      "tags": ["Effect", "Sampler", "Physical Modeling", "Delay"]
+    }
+  ]
+}
